@@ -1,24 +1,29 @@
 package com.omidbiz.action;
 
+
+
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.servlet.http.HttpServletRequest;
 
-import org.jboss.seam.servlet.ContextualHttpServletRequest;
-
 /**
- * @author Omid Pourhadi : omidpourhadi [AT] gmail [DOT] com 
- * <b>NOTE</b> : use
+ * @author Omid Pourhadi : omidpourhadi [AT] gmail [DOT] com <b>NOTE</b> : use
  *         in Seam ContextualHttpServletRequest
- * @param <E> : entity
+ * @param <E>
+ *            : entity
  */
-public abstract class RequestProcessor<E> extends ContextualHttpServletRequest
+public abstract class RequestProcessor<E> extends TransactionalContextualHttpServletRequest
 {
 
     protected E instance;
@@ -92,7 +97,7 @@ public abstract class RequestProcessor<E> extends ContextualHttpServletRequest
             List<Field> fields = ReflectionUtil.getFields(entityClass);
             Map<String, String[]> parameterMap = request.getParameterMap();
             Object nestedInstance = null;
-            Collection collectionInstance = null;
+            HashMap<String, Object> nestedParams = new HashMap<String, Object>();
             for (Map.Entry<String, String[]> param : parameterMap.entrySet())
             {
                 String key = param.getKey();
@@ -121,32 +126,7 @@ public abstract class RequestProcessor<E> extends ContextualHttpServletRequest
                 }
                 else if (key.indexOf("[") > 0)
                 {
-                    // handle list roles[0].rolename
-                    String nestedFiledName = key.substring(0, key.indexOf("[")); // roles
-                    String nestedPropertyName = key.substring(key.indexOf(".") + 1); // rolename
-                    int i = 0;
-                    for (Field field : fields)
-                    {
-                        if (field.getName().equals(nestedFiledName))
-                        {
-                            field.setAccessible(true);
-                            Class<?> type = field.getType();
-                            if (collectionInstance == null)
-                                collectionInstance = ReflectionUtil.instantiateCollection(type);
-                            Class<?> genericFieldClassType = ReflectionUtil.getGenericFieldClassType(field);
-                            // TODO : if primitive throw exception
-                            Object genericInstance = genericFieldClassType.newInstance();
-                            Field instanceField = ReflectionUtil.getField(genericFieldClassType, nestedPropertyName);
-                            String val = param.getValue()[i];
-                            instanceField.setAccessible(true);
-                            ReflectionUtil.set(instanceField, genericInstance, ReflectionUtil.toObject(instanceField.getType(), val));
-                            //
-                            collectionInstance.add(genericInstance);
-                            //
-                            ReflectionUtil.set(field, instance, collectionInstance);
-                            i++;
-                        }
-                    }
+                    nestedParams.put(key, param.getValue()[0]);
                 }
                 else
                 {
@@ -166,12 +146,60 @@ public abstract class RequestProcessor<E> extends ContextualHttpServletRequest
                 }
 
             }
+            if (nestedParams.isEmpty() == false)
+                processNestedObjectList(nestedParams);
         }
         catch (Exception e)
         {
             e.printStackTrace();
         }
 
+    }
+
+    private void processNestedObjectList(HashMap<String, Object> nestedParams) throws Exception
+    {
+        List<Map.Entry<String, Object>> list = new LinkedList<Map.Entry<String, Object>>(nestedParams.entrySet());
+        Collections.sort(list, new MapEntryAlphanumComparator());
+        Collection collectionInstance = null;
+        Object genericInstance = null;
+        int paramIndex = 0;
+        List<Field> fields = ReflectionUtil.getFields(entityClass);
+        for (Map.Entry<String, Object> entry : list)
+        {
+            // handle list roles[0].rolename
+            String key = entry.getKey();
+            String nestedFiledName = key.substring(0, key.indexOf("[")); // roles
+            String nestedPropertyName = key.substring(key.indexOf(".") + 1); // rolename
+            Matcher matcher = Pattern.compile("\\[(.)\\]").matcher(key);
+            int nestedIndex = 0;
+            if (matcher.find())
+                nestedIndex = Integer.parseInt(matcher.group(1));
+            int i = 0;
+            for (Field field : fields)
+            {
+                if (field.getName().equals(nestedFiledName))
+                {
+                    field.setAccessible(true);
+                    Class<?> type = field.getType();
+                    if (collectionInstance == null)
+                        collectionInstance = ReflectionUtil.instantiateCollection(type);
+                    Class<?> genericFieldClassType = ReflectionUtil.getGenericFieldClassType(field);
+                    // TODO : if primitive throw exception
+                    if (genericInstance == null || nestedIndex != paramIndex)
+                        genericInstance = genericFieldClassType.newInstance();
+                    Field instanceField = ReflectionUtil.getField(genericFieldClassType, nestedPropertyName);
+                    String val = String.valueOf(entry.getValue());
+                    instanceField.setAccessible(true);
+                    ReflectionUtil.set(instanceField, genericInstance, ReflectionUtil.toObject(instanceField.getType(), val));
+                    //
+                    collectionInstance.add(genericInstance);
+                    //
+                    ReflectionUtil.set(field, instance, collectionInstance);
+                    i++;
+                }
+            }
+            paramIndex = nestedIndex;
+        }
     }
 
     public E getInstance()
