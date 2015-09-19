@@ -1,4 +1,5 @@
-package ir.omidbiz.db;
+package orm;
+
 
 
 import java.io.Serializable;

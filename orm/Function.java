@@ -1,4 +1,4 @@
-package ir.omidbiz.db;
+package orm;
 
 /**
  * @author omid

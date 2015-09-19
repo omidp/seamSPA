@@ -1,6 +1,13 @@
-package ir.omidbiz.db;
+package orm;
 
-
+import orm.GroupBy.GroupByProperty;
+import orm.Sort.Direction;
+import orm.Sort.Order;
+import orm.WhereClause.QueryParam;
+import orm.ReflectionUtil;
+import orm.CollectionUtil;
+import orm.RegexUtil;
+import orm.StringUtil;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -25,12 +32,28 @@ import org.jboss.seam.web.Parameters;
 
 /**
  * @author omid <br />
+ *         <p>
+ *         this is a copy of Seam EntityQuery for native queries
+ *         </p>
+ *         <p>
+ *         <blockquote>
+ * 
+ *         <pre>
+ * QueryController qc = new QueryController();
+ * qc.setQuery();
+ * qc.addWhereClause();
+ * qc.execute();
+ * </pre>
+ * 
+ *         </blockquote>
+ *         <p>
+ *         <br />
  *         steps to use this controller <br />
- *         1. set query <br />
+ *         1. set query (also available in constructor)<br />
  *         2. add where clause (OPTIONAL) <br />
  *         3. add order by (Optional) <br />
  *         4. add group by (Optional) <br />
- *         5. call build method <br />
+ *         5. call createQuery method <br />
  *         6. call execute method <br />
  */
 public class QueryController extends Controller
@@ -45,7 +68,11 @@ public class QueryController extends Controller
 
     private StringBuffer queryBuffer;
 
-    private List<WhereClause> whereClauseList = new ArrayList<WhereClause>();
+    private StringBuffer countQueryBuffer;
+
+    private List<WhereClause> whereClauseList;
+
+    private List<String> queryAppenders;
 
     private Sort sort;
 
@@ -63,40 +90,19 @@ public class QueryController extends Controller
 
     private Long resultCount;
 
+    /**
+     * values inject into query directly
+     */
     private Object[] queryParamValues;
 
-    private List<ValueExpression> valueExpressions = new ArrayList<Expressions.ValueExpression>();
-
-    private List<Object> values;
-
-    private boolean isAnyParameterDirty(List<ValueExpression> valueBindings, List<Object> lastParameterValues)
-    {
-        if (lastParameterValues == null)
-            return true;
-        for (int i = 0; i < valueBindings.size(); i++)
-        {
-            Object parameterValue = valueBindings.get(i).getValue();
-            Object lastParameterValue = lastParameterValues.get(i);
-            if ("".equals(parameterValue))
-                parameterValue = null;
-            if ("".equals(lastParameterValue))
-                lastParameterValue = null;
-            if (parameterValue != lastParameterValue && (parameterValue == null || !parameterValue.equals(lastParameterValue)))
-            {
-                return true;
-            }
-        }
-        return false;
-    }
+    /**
+     * all sql values inject into queries
+     */
+    private List<Object> values = new ArrayList<Object>();
 
     public void setQueryParamValues(Object... queryParamValues)
     {
         this.queryParamValues = queryParamValues;
-    }
-
-    public List getResultList()
-    {
-        return resultList;
     }
 
     protected EntityManager getEntityManager()
@@ -111,13 +117,18 @@ public class QueryController extends Controller
 
     public void addWhereClause(WhereClause whereClause)
     {
+        if (CollectionUtil.isEmpty(whereClauseList))
+            whereClauseList = new ArrayList<WhereClause>();
         this.whereClauseList.add(whereClause);
     }
 
     public void setQuery(String query)
     {
         this.query = query;
-        this.root = new Root(query);
+        if (StringUtil.isEmpty(getQueryAlias()))
+            this.root = new Root(query);
+        else
+            this.root = new Root(getQueryAlias());
     }
 
     /**
@@ -125,54 +136,41 @@ public class QueryController extends Controller
      * 
      * @param joinQuery
      */
-    protected void appendQuery(String joinQuery)
+    public void appendQuery(String joinQuery)
     {
         if (this.query == null)
         {
             throw new IllegalArgumentException("You have to set query first");
         }
-        if (queryBuffer == null)
-        {
-            throw new IllegalArgumentException("You have to call buildQuery method first");
-        }
-        queryBuffer.append(joinQuery);
+        if (queryAppenders == null)
+            queryAppenders = new ArrayList<String>();
+        queryAppenders.add(joinQuery);
     }
 
-    public Query buildQuery()
+    public Query createQuery()
     {
         if (this.query == null)
         {
             throw new IllegalArgumentException("You have to provide query");
         }
         //
-        if (isAnyParameterDirty(valueExpressions, values))
-        {
-            this.resultList = null;
-        }
-        //
         queryBuffer = new StringBuffer(this.query.replaceAll("[\\r|\\t|\\n]", " "));
-        addRestrictions();
-        // where clause
-        if (CollectionUtil.isNotEmpty(whereClauseList))
+        // where clause is not null means it specify outside of restrictions
+        // method so don't add restrictions
+        if (whereClauseList == null)
         {
-            applyWhere(queryBuffer);
+            whereClauseList = new ArrayList<WhereClause>();
+            addRestrictions();
+            addToExpressions();
         }
+
+        applyAppenders(queryBuffer);
+
+        applyWhere(queryBuffer);
         // Group
         if (groupBy != null)
         {
-            if (RegexUtil.find(queryBuffer.toString(), "Group By") == false)
-                queryBuffer.append(" Group By ");
-            int i = 0;
-            for (GroupByProperty prop : groupBy)
-            {
-                if (i > 0)
-                    queryBuffer.append(", ");
-                if (prop.getPropertyName().contains("."))
-                    queryBuffer.append(prop.getPropertyName());
-                else
-                    queryBuffer.append(this.root.getAlias()).append(".").append(prop.getPropertyName());
-                i++;
-            }
+            applyGroupBy(queryBuffer);
         }
         // Sort
         if (sort != null)
@@ -191,9 +189,32 @@ public class QueryController extends Controller
         return new Query(queryBuffer.toString(), values);
     }
 
-    protected void addRestrictions()
+    private void applyAppenders(StringBuffer qb)
     {
+        if (CollectionUtil.isNotEmpty(queryAppenders))
+        {
+            for (String q : queryAppenders)
+            {
+                qb.append(q);
+            }
+        }
+    }
 
+    private void applyGroupBy(StringBuffer queryBuffer2)
+    {
+        if (RegexUtil.find(queryBuffer.toString(), "Group By") == false)
+            queryBuffer.append(" Group By ");
+        int i = 0;
+        for (GroupByProperty prop : groupBy)
+        {
+            if (i > 0)
+                queryBuffer.append(", ");
+            if (prop.getPropertyName().contains("."))
+                queryBuffer.append(prop.getPropertyName());
+            else
+                queryBuffer.append(this.root.getAlias()).append(".").append(prop.getPropertyName());
+            i++;
+        }
     }
 
     private void applyOrderBy(StringBuffer queryBuffer)
@@ -224,12 +245,14 @@ public class QueryController extends Controller
 
     private void applyWhere(StringBuffer queryBuffer)
     {
-        values = new ArrayList<Object>(); // reset values
+        values = new ArrayList<Object>(); // must reset values
         int wcCount = 0;
         if (RegexUtil.find(queryBuffer.toString(), "where"))
         {
             if (CollectionUtil.isNotEmpty(whereClauseList))
-                queryBuffer.append(" AND "); //maybe developer should define this operand
+                queryBuffer.append(" AND "); // maybe developer should
+                                             // define
+            // this operand
         }
         if (RegexUtil.find(queryBuffer.toString(), "where") == false)
         {
@@ -237,11 +260,10 @@ public class QueryController extends Controller
                 queryBuffer.append(" WHERE ");
         }
         for (WhereClause wc : whereClauseList)
-        {            
+        {
             parseWhereClause(wc, queryBuffer, wcCount);
             wcCount++;
         }
-
     }
 
     private void parseWhereClause(WhereClause wc, StringBuffer qb, int clauseCount)
@@ -257,8 +279,8 @@ public class QueryController extends Controller
             Operator paramOperator = qp.getOperator();
             if ((Operator.IS_NULL.equals(paramOperator) || Operator.NOT_NULL.equals(paramOperator)) == false)
             {
-                if(shouldIgnoreClause(value))
-                    continue;                
+                if (shouldIgnoreClause(value))
+                    continue;
             }
             //
             useOperandGrouping = true;
@@ -273,7 +295,7 @@ public class QueryController extends Controller
 
             if (value != null && value instanceof Date)
             {
-                //jdbc uses sql date (convert java util date to sql date
+                // jdbc uses sql date (convert java util date to sql date
                 Date d = (Date) value;
                 java.sql.Date dt = new java.sql.Date(d.getTime());
                 value = dt;
@@ -335,8 +357,6 @@ public class QueryController extends Controller
 
             }
 
-            
-
         }
         if (useOperandGrouping)
         {
@@ -354,7 +374,7 @@ public class QueryController extends Controller
     private boolean shouldIgnoreClause(Object value)
     {
         if (value == null)
-            return true; 
+            return true;
         if (isSeamExpression(value))
         {
             value = Expressions.instance().createValueExpression((String) value).getValue();
@@ -468,7 +488,6 @@ public class QueryController extends Controller
         if (isSeamExpression(valueExpression))
         {
             ValueExpression<Object> expression = Expressions.instance().createValueExpression(valueExpression);
-            valueExpressions.add(expression);
             Object value = expression.getValue();
             if (value != null)
             {
@@ -510,23 +529,40 @@ public class QueryController extends Controller
         return false;
     }
 
-    private Query buildCountQuery()
+    protected Query createCountQuery()
     {
         if (StringUtil.isEmpty(this.query))
         {
             throw new IllegalArgumentException("query is not set");
         }
-        queryBuffer = new StringBuffer("select count(*) from ");
+        if (StringUtil.isEmpty(getCountQueryProjection()))
+            countQueryBuffer = new StringBuffer("select count(*) from ");
+        else
+            countQueryBuffer = new StringBuffer(String.format("select %s from ", getCountQueryProjection()));
         String cnt = this.query.replaceAll("[\\r|\\t|\\n]", " ");
         final Matcher matcher = FROM_PATTERN.matcher(cnt);
         if (matcher.find())
-            queryBuffer.append(matcher.group(2));
-        addRestrictions();
-        if (CollectionUtil.isNotEmpty(whereClauseList))
+            countQueryBuffer.append(matcher.group(2));
+        if (whereClauseList == null)
         {
-            applyWhere(queryBuffer);
+            whereClauseList = new ArrayList<WhereClause>();
+            addRestrictions();
+            addToExpressions();
         }
-        return new Query(queryBuffer.toString(), values);
+
+        applyAppenders(countQueryBuffer);
+
+        applyWhere(countQueryBuffer);
+        if (groupBy != null)
+        {
+            applyGroupBy(countQueryBuffer);
+        }
+        return new Query(countQueryBuffer.toString(), values);
+    }
+
+    protected String getCountQueryProjection()
+    {
+        return null;
     }
 
     private static class Root
@@ -547,6 +583,7 @@ public class QueryController extends Controller
             else
                 split = alias.split("\\s");
             this.alias = split[split.length - 1];
+            // logger.info(this.alias);
         }
 
         public String getAlias()
@@ -583,7 +620,6 @@ public class QueryController extends Controller
     {
         String queryToExecute = queryRunner.getQueryToExecute();
         List<Object> paramValues = queryRunner.getVals();
-        logger.info("execute query : " + queryToExecute);
         boolean hasQueryParams = CollectionUtil.isNotEmpty(paramValues) || this.queryParamValues != null;
 
         if (hasQueryParams == false)
@@ -718,28 +754,26 @@ public class QueryController extends Controller
     @Transactional
     public Long getResultCount()
     {
-        initResultCount();
-        return resultCount;
-    }
-
-    private void initResultCount()
-    {
-        if (resultCount == null)
+        Query countQuery = createCountQuery();
+        if (isAnyParameterDirty())
         {
-            Query countQuery = buildCountQuery();
-            logger.info("execute count query : " + countQuery.getQueryToExecute());
-            List<Object> paramValues = countQuery.getVals();
-            boolean hasParam = CollectionUtil.isNotEmpty(paramValues) || this.queryParamValues != null;
-            Long count = null;
-            if (hasParam)
-            {
-                Object[] parameters = bindParameters(this.queryParamValues, paramValues);
-                count = DBUtil.instance().executeCount(countQuery.getQueryToExecute(), parameters);
-            }
-            else
-                count = DBUtil.instance().executeCount(countQuery.getQueryToExecute());
-            resultCount = count == null ? null : count;
+            refresh();
         }
+        if (resultCount != null)
+            return resultCount;
+        List<Object> paramValues = countQuery.getVals();
+        boolean hasParam = CollectionUtil.isNotEmpty(paramValues) || this.queryParamValues != null;
+        Long count = null;
+        if (hasParam)
+        {
+            Object[] parameters = bindParameters(this.queryParamValues, paramValues);
+            count = DBUtil.instance().executeScalar(countQuery.getQueryToExecute(), Long.class, parameters);
+        }
+        else
+            count = DBUtil.instance().executeScalar(countQuery.getQueryToExecute(), Long.class);
+        resultCount = count == null ? null : count;
+        addToExpressionValues();
+        return resultCount;
     }
 
     public void setFirstResult(Integer firstResult)
@@ -749,7 +783,7 @@ public class QueryController extends Controller
 
     public Integer getPageNumber()
     {
-        if (pageNumber != null && pageNumber < 0)
+        if (pageNumber == null || pageNumber < 0)
             pageNumber = 0;
         return pageNumber;
     }
@@ -826,6 +860,13 @@ public class QueryController extends Controller
         addGroupBy(null);
         addOrderBy(null);
         this.queryParamValues = null;
+        pageNumber = 0;
+    }
+
+    protected void refresh()
+    {
+        resultCount = null;
+        resultList = null;
     }
 
     protected <T> T parseValueExpression(String seamExpression, Class<T> type)
@@ -834,6 +875,77 @@ public class QueryController extends Controller
         if (exprVal.getValue() == null)
             return null;
         return exprVal.getValue();
+    }
+
+    private List<ValueExpression> valueExpressions;
+    private List<Object> expressionValues;
+
+    protected void addToExpressions()
+    {
+        if (CollectionUtil.isNotEmpty(whereClauseList))
+        {
+            valueExpressions = new ArrayList<Expressions.ValueExpression>();
+            for (WhereClause wc : whereClauseList)
+            {
+                for (QueryParam queryParam : wc)
+                {
+                    Object ve = queryParam.getValue();
+                    if (isSeamExpression(ve))
+                        valueExpressions.add(Expressions.instance().createValueExpression((String) ve));
+                }
+            }
+        }
+
+    }
+
+    protected void addToExpressionValues()
+    {
+        if (CollectionUtil.isNotEmpty(whereClauseList))
+        {
+            expressionValues = new ArrayList<Object>();
+            for (WhereClause wc : whereClauseList)
+            {
+                for (QueryParam queryParam : wc)
+                {
+                    Object ve = queryParam.getValue();
+                    if (isSeamExpression(ve))
+                        expressionValues.add(Expressions.instance().createValueExpression((String) ve).getValue());
+                }
+            }
+        }
+
+    }
+
+    protected boolean isAnyParameterDirty()
+    {
+        if (expressionValues == null || valueExpressions == null)
+            return true;
+        for (int i = 0; i < valueExpressions.size(); i++)
+        {
+            if (valueExpressions.size() == expressionValues.size())
+            {
+                Object expressionValue = valueExpressions.get(i).getValue();
+                Object value = expressionValues.get(i);
+                if (expressionValue != value && (expressionValue == null || !expressionValue.equals(value)))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected void addRestrictions()
+    {
+    }
+
+    /**
+     * define alias for complex query
+     * 
+     * @return
+     */
+    protected String getQueryAlias()
+    {
+        return null;
     }
 
 }

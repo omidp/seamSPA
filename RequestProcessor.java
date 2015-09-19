@@ -1,6 +1,4 @@
-package com.omidbiz.action;
-
-
+package com.omidbiz;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
@@ -138,7 +136,7 @@ public abstract class RequestProcessor<E> extends TransactionalContextualHttpSer
                             if (ReflectionUtil.isPrimitive(type) || ReflectionUtil.isWrapper(type))
                             {
                                 field.setAccessible(true);
-                                ReflectionUtil.set(field, instance, param.getValue()[0]);
+                                ReflectionUtil.set(field, instance, ReflectionUtil.toObject(type, param.getValue()[0]));
                             }
 
                         }
@@ -174,7 +172,6 @@ public abstract class RequestProcessor<E> extends TransactionalContextualHttpSer
             int nestedIndex = 0;
             if (matcher.find())
                 nestedIndex = Integer.parseInt(matcher.group(1));
-            int i = 0;
             for (Field field : fields)
             {
                 if (field.getName().equals(nestedFiledName))
@@ -195,7 +192,6 @@ public abstract class RequestProcessor<E> extends TransactionalContextualHttpSer
                     collectionInstance.add(genericInstance);
                     //
                     ReflectionUtil.set(field, instance, collectionInstance);
-                    i++;
                 }
             }
             paramIndex = nestedIndex;

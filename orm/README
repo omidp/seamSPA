@@ -1,0 +1,26 @@
+===Dunning-Kruger effect ORM
+
+```
+    @Test
+    public void testQC()
+    {
+        QueryController qc = new QueryController() {
+
+            @Override
+            protected String getQueryAlias()
+            {
+                return "u";
+            }
+
+        };
+        qc.setQuery("select * from users ");
+        qc.setQueryParamValues(1L);
+        qc.appendQuery(" left join profile p on u.user_id = p.user_id AND p.user_id = ?");
+        qc.addWhereClause(new WhereClause(Arrays.asList(new QueryParam("u.user_name", "omidp", Operator.EQUAL))));
+        qc.addGroupBy(new GroupBy(Arrays.asList(new GroupByProperty("u.user_id"))));
+        qc.addOrderBy(new Sort(Arrays.asList(new Order(Direction.ASC, "u.user_id"))));
+        Query query = qc.createQuery();        
+        System.out.println(query.getQueryToExecute());
+			
+    }
+```
